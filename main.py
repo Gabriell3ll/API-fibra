@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
 # calcular_rutas_full.py
-# Replica la lógica del macro VBA provisto por el usuario.
-# Requisitos: pip install openpyxl
+# Versión adaptada para recibir JSON vía HTTP (Flask) o stdin.
+# Requisitos: pip install openpyxl flask gunicorn
 
-import json, math, shutil, os, sys
+import json
+import math
+import shutil
+import os
+import sys
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
+from flask import Flask, request, jsonify, send_from_directory
+from werkzeug.utils import secure_filename
 
-# CONFIG
-import os
-
+# CONFIG (entorno)
 PLANTILLA = os.environ.get("PLANTILLA", "Plantilla.xlsx")
-INPUT_JSON = os.environ.get("INPUT_JSON", "rutas_ordenadas.json")
 OUTPUT_PREFIX = os.environ.get("OUTPUT_PREFIX", "Resultado")
+OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "/tmp")
 
+# Asegurar directorio de salida
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Helpers equivalentes a VBA
 def NivelKV(tipoKV: str):
@@ -25,14 +31,12 @@ def TipoDesdeNivel(nivel:int):
     return r.get(nivel, "")
 
 def distancia_m(lat1, lon1, lat2, lon2):
-    # idéntica fórmula con 5% extra
     R = 6371000.0
     dx = math.radians(lon2 - lon1) * R * math.cos(math.radians((lat1 + lat2) / 2.0))
     dy = math.radians(lat2 - lat1) * R
     return math.sqrt(dx*dx + dy*dy) * 1.05
 
 def angle_deg(lat1, lon1, lat2, lon2, lat3, lon3):
-    # vector como en VBA: usando cos(lat2)
     v1x = (lon1 - lon2) * math.cos(math.radians(lat2))
     v1y = (lat1 - lat2)
     v2x = (lon3 - lon2) * math.cos(math.radians(lat2))
@@ -70,7 +74,6 @@ def leer_thresholds(wb):
             if cell is None:
                 out[k] = v
             else:
-                # si es texto, intentar convertir a número
                 if isinstance(cell,(int,float)):
                     out[k] = float(cell)
                 else:
@@ -118,32 +121,33 @@ def absorber(ws, pos, sentido, nivelActual, acum, tipo, start_row, last_row, thr
 
 # Colores (si quieres replicar color del macro)
 FILL_KV = {
-    "KV100": PatternFill(start_color="C8C8C8", end_color="C8C8C8", fill_type="solid"),  # RGB(200,200,200)
-    "KV200": PatternFill(start_color="BDECB6", end_color="BDECB6", fill_type="solid"),  # RGB(189,236,182)
-    "KV300": PatternFill(start_color="51D1F6", end_color="51D1F6", fill_type="solid"),  # RGB(81,209,246)
-    "KV500": PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid"),  # RGB(255,255,0)
-    "KV1000": PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid"), # RGB(255,0,0)
+    "KV100": PatternFill(start_color="C8C8C8", end_color="C8C8C8", fill_type="solid"),
+    "KV200": PatternFill(start_color="BDECB6", end_color="BDECB6", fill_type="solid"),
+    "KV300": PatternFill(start_color="51D1F6", end_color="51D1F6", fill_type="solid"),
+    "KV500": PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid"),
+    "KV1000": PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid"),
 }
 
-def procesar_rutas():
+def procesar_rutas(rutas):
+    """
+    rutas: lista de objetos tal como las envia n8n (cada elemento con keys: branch, inicio, puntos)
+    Devuelve lista de dicts con informacion sobre los archivos generados.
+    """
     if not os.path.exists(PLANTILLA):
-        print("ERROR: no se encuentra", PLANTILLA, "en la carpeta actual.")
-        sys.exit(1)
+        raise FileNotFoundError(f"No se encuentra la plantilla: {PLANTILLA}")
 
-    if not os.path.exists(INPUT_JSON):
-        print("ERROR: no se encuentra", INPUT_JSON, "en la carpeta actual.")
-        sys.exit(1)
+    if not isinstance(rutas, list):
+        raise ValueError("El JSON debe ser una lista de rutas")
 
-    with open(INPUT_JSON, encoding="utf-8") as f:
-        rutas = json.load(f)
-
+    resultados = []
     print(f"Procesando {len(rutas)} rutas...")
 
     for rindex, ruta in enumerate(rutas, start=1):
         branch = ruta.get("branch","BR")
         inicio_name = ruta.get("inicio","START")
         puntos = ruta.get("puntos", [])
-        salida = f"{OUTPUT_PREFIX}_{branch}_{inicio_name}.xlsx"
+        filename = secure_filename(f"{OUTPUT_PREFIX}_{branch}_{inicio_name}.xlsx")
+        salida = os.path.join(OUTPUT_DIR, filename)
 
         # copiar plantilla para no modificarla
         shutil.copy(PLANTILLA, salida)
@@ -151,6 +155,7 @@ def procesar_rutas():
         if "Fiber design" not in wb.sheetnames:
             print(f"ERROR: la plantilla no contiene hoja 'Fiber design' - {salida}")
             wb.close()
+            resultados.append({"route_index": rindex, "error": "Hoja 'Fiber design' no encontrada"})
             continue
         ws = wb["Fiber design"]
 
@@ -163,26 +168,11 @@ def procesar_rutas():
 
         # PASO 0: limpiar E:J desde fila 3 hacia abajo, y A1 = "NOMBRE RUTA"
         start_row = 3
-        # find last row B like macro
-        def last_row_by_B():
-            r = start_row
-            while True:
-                if ws.cell(row=r, column=2).value is None and ws.cell(row=r, column=3).value is None and ws.cell(row=r, column=1).value is None:
-                    # continue until last nonempty? But we'll set directly later based on written points
-                    break
-                r += 1
-                if r > 100000:
-                    break
-            return r-1
 
-        # Insertamos datos: sobrescribimos desde fila 3
-        # Primero limpiamos contenido E3:J... y G3:G... etc
-        # We'll simply clear E:J for a wide range (enough for number of puntos)
         max_rows_to_clear = 20000
         for rr in range(start_row, start_row + max_rows_to_clear):
             for col in range(5, 11):  # E..J
                 ws.cell(row=rr, column=col).value = None
-                # remove fill? openpyxl - set to None
                 ws.cell(row=rr, column=col).fill = PatternFill(fill_type=None)
 
         ws["A1"] = "NOMBRE RUTA"
@@ -202,6 +192,7 @@ def procesar_rutas():
         if lastRow < start_row:
             print(f"Ruta {branch} {inicio_name}: sin puntos, saltando.")
             wb.save(salida); wb.close()
+            resultados.append({"route_index": rindex, "skipped": True, "file": filename})
             continue
 
         # PASO 1: ángulos (D) y distancias (E)
@@ -258,37 +249,30 @@ def procesar_rutas():
                 else:
                     ws.cell(row=i, column=7).value = "ERROR"
 
-        # If any ERROR in G3:GlastRow -> keep (macro shows MsgBox), we'll log and skip further heavy adjustments
         error_count = sum(1 for i in range(start_row, lastRow+1) if (ws.cell(row=i, column=7).value or "") == "ERROR")
         if error_count > 0:
             print(f"Ruta {branch} {inicio_name}: se detectaron {error_count} ERROR(s) en clasificación inicial (col G). Revisa límites en Controls.")
 
         # PASO 3 y 4: Mapear tramos + bucle de corrección (prioridad 5 -> 1)
-        # Igual que macro: iterar hasta que no haya cambios
         cambios = True
         iter_count = 0
         while cambios and iter_count < 200:
             iter_count += 1
             cambios = False
             tramoList = mapear_tramos(ws, start_row, lastRow)
-            # recorrer niveles 5 .. 1
             for lvl in range(5, 0, -1):
-                # importante: recorrer copia de tramoList
                 for tramo in list(tramoList):
                     ini, fin, tipo, sumaDist = tramo
                     nivelActual = NivelKV(tipo)
                     if nivelActual != lvl:
                         continue
-                    # if sumaDist >= C15 or nivelActual >= 4 => no modificar
                     if sumaDist >= C15 or nivelActual >= 4:
                         continue
                     nivelArriba = NivelKV(ws.cell(row=ini-1, column=7).value or "") if ini > start_row else 0
                     nivelAbajo = NivelKV(ws.cell(row=fin+1, column=7).value or "") if fin < lastRow else 0
-                    # rama ABSORCION: ambos vecinos < nivelActual
                     if (nivelArriba < nivelActual and nivelAbajo < nivelActual):
                         sumaArriba = sumar_tramo(ws, ini-1, -1, nivelActual, start_row, lastRow)
                         sumaAbajo = sumar_tramo(ws, fin+1, 1, nivelActual, start_row, lastRow)
-                        # decidir primeroArriba segun macro
                         if sumaArriba < sumaAbajo:
                             primeroArriba = True
                         elif sumaArriba > sumaAbajo:
@@ -300,7 +284,7 @@ def procesar_rutas():
                                 primeroArriba = False
                         acum = sumaDist
                         if primeroArriba:
-                            acum = absorber(ws, ini-1, -1, nivelActual, acum, tipo, start_row, lastRow, C15)
+                            acum = absorber(ws, ini-1, -1, nivelActual, acum, tipo, start_row, last_row=lastRow, threshold_c15=C15)
                             if acum < C15:
                                 acum = absorber(ws, fin+1, 1, nivelActual, acum, tipo, start_row, lastRow, C15)
                         else:
@@ -309,9 +293,7 @@ def procesar_rutas():
                                 acum = absorber(ws, ini-1, -1, nivelActual, acum, tipo, start_row, lastRow, C15)
                         cambios = True
                         tramoList = mapear_tramos(ws, start_row, lastRow)
-                        # continuar a siguiente tramo (macro usa goto)
                         continue
-                    # rama PROMOCION: al menos un vecino mayor
                     elif (nivelArriba > nivelActual or nivelAbajo > nivelActual):
                         candUp = nivelArriba if nivelArriba > nivelActual else 0
                         candDown = nivelAbajo if nivelAbajo > nivelActual else 0
@@ -333,11 +315,8 @@ def procesar_rutas():
                         cambios = True
                         tramoList = mapear_tramos(ws, start_row, lastRow)
                         continue
-                    # else no change
-            # fin niveles
-        # fin while iterativo
 
-        # PASO 5: pintar colores (si se quiere)
+        # PASO 5: pintar colores
         for i in range(start_row, lastRow+1):
             v = (ws.cell(row=i, column=7).value or "")
             if v in FILL_KV:
@@ -347,12 +326,11 @@ def procesar_rutas():
                     pass
 
         # PASO 6: MUFA en columna H
-        # Marca "Mx" solo si G(i) <> G(i-1) y no es la primera ni última fila
         for i in range(start_row+1, lastRow):
             if (ws.cell(row=i, column=7).value or "") != (ws.cell(row=i-1, column=7).value or ""):
                 ws.cell(row=i, column=8).value = "Mx"
 
-        # Revision acumulada para hacer el corte de Fibra cada 2860m
+        # Revision acumulada para corte cada 2860m
         acumulado = 0.0
         for i in range(start_row, lastRow):
             if (ws.cell(row=i, column=8).value or "") == "Mx":
@@ -383,7 +361,6 @@ def procesar_rutas():
                 sumaDistancia = 0.0
                 cuentaSuspensiones = 0
             else:
-                # angle check
                 d_ang = ws.cell(row=i, column=4).value
                 ang_is_small = False
                 try:
@@ -439,8 +416,57 @@ def procesar_rutas():
         wb.save(salida)
         wb.close()
         print(f"✔ Ruta {rindex}/{len(rutas)} -> {salida}")
+        resultados.append({"route_index": rindex, "file": filename, "path": salida})
 
     print("✅ Todas las rutas procesadas.")
+    return resultados
 
+# -------------------
+# Flask API
+# -------------------
+app = Flask(__name__)
+
+@app.route("/procesar", methods=["POST"])
+def api_procesar():
+    try:
+        rutas = request.get_json(force=True)
+        if rutas is None:
+            return jsonify({"error": "No se recibió JSON"}), 400
+
+        resultados = procesar_rutas(rutas)
+
+        # construir URLs de descarga
+        host = request.host_url.rstrip('/')
+        for r in resultados:
+            if "file" in r:
+                r["download_url"] = f"{host}/download/{r['file']}"
+
+        return jsonify({"status":"ok", "results": resultados}), 200
+
+    except Exception as e:
+        print("Error en /procesar:", str(e))
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/download/<filename>", methods=["GET"])
+def download_file(filename):
+    # servir solo desde OUTPUT_DIR
+    safe_name = secure_filename(filename)
+    file_path = os.path.join(OUTPUT_DIR, safe_name)
+    if not os.path.exists(file_path):
+        return jsonify({"error":"file not found"}), 404
+    return send_from_directory(OUTPUT_DIR, safe_name, as_attachment=True)
+
+# CLI / fallback: si se llama por stdin, procesa y sale (útil para pruebas)
 if __name__ == "__main__":
-    procesar_rutas()
+    try:
+        if not sys.stdin.isatty():
+            print("📡 Leyendo JSON desde stdin...")
+            data = json.load(sys.stdin)
+            out = procesar_rutas(data)
+            print(json.dumps({"status":"ok","results":out}, ensure_ascii=False, indent=2))
+        else:
+            # modo desarrollo: correr app Flask
+            app.run(host="0.0.0.0", port=10000)
+    except Exception as e:
+        print("ERROR:", str(e))
+        sys.exit(1)
