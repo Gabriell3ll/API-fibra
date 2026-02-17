@@ -458,15 +458,7 @@ def download_file(filename):
 
 # CLI / fallback: si se llama por stdin, procesa y sale (útil para pruebas)
 if __name__ == "__main__":
-    try:
-        if not sys.stdin.isatty():
-            print("📡 Leyendo JSON desde stdin...")
-            data = json.load(sys.stdin)
-            out = procesar_rutas(data)
-            print(json.dumps({"status":"ok","results":out}, ensure_ascii=False, indent=2))
-        else:
-            # modo desarrollo: correr app Flask
-            app.run(host="0.0.0.0", port=10000)
-    except Exception as e:
-        print("ERROR:", str(e))
-        sys.exit(1)
+    # Render necesita que solo levantemos el servidor
+    app.run(host="0.0.0.0", port=10000)
+
+
