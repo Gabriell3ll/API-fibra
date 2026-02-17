@@ -429,9 +429,19 @@ app = Flask(__name__)
 @app.route("/procesar", methods=["POST"])
 def api_procesar():
     try:
-        rutas = request.get_json(force=True)
-        if rutas is None:
+        data = request.get_json(force=True)
+        if data is None:
             return jsonify({"error": "No se recibió JSON"}), 400
+
+        # --- ADAPTADOR PARA n8n ---
+        # n8n manda: [ { "rutas": [...] } ]
+        if isinstance(data, list) and len(data) > 0 and "rutas" in data[0]:
+            rutas = data[0]["rutas"]
+        else:
+            # si viene directo (modo antiguo), usar tal cual
+            rutas = data
+
+        # --------------------------
 
         resultados = procesar_rutas(rutas)
 
@@ -460,5 +470,6 @@ def download_file(filename):
 if __name__ == "__main__":
     # Render necesita que solo levantemos el servidor
     app.run(host="0.0.0.0", port=10000)
+
 
 
