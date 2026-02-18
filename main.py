@@ -430,19 +430,23 @@ app = Flask(__name__)
 def api_procesar():
     try:
         data = request.get_json(force=True)
+
         if data is None:
             return jsonify({"error": "No se recibió JSON"}), 400
 
-        print("JSON RECIBIDO:", type(data), data)  # 👈 agrega esto para debug
+        # 🔥 Adaptador para n8n
+        if isinstance(data, dict) and "rutas" in data:
+            rutas = data["rutas"]          # <- extrae la lista real
 
-        # ---- ADAPTADOR n8n ----
-        if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict) and "rutas" in data[0]:
-            rutas = data[0]["rutas"]
+        elif isinstance(data, list) and len(data) > 0 and "rutas" in data[0]:
+            rutas = data[0]["rutas"]       # <- por si llega envuelto en array
+
         else:
-            rutas = data
-        # -----------------------
+            rutas = data                   # <- formato original (curl/manual)
 
-        print("RUTAS USADAS:", type(rutas))  # 👈 debug
+        # Validación final (la que esperaba tu script)
+        if not isinstance(rutas, list):
+            return jsonify({"error": "El JSON debe ser una lista de rutas"}), 400
 
         resultados = procesar_rutas(rutas)
 
@@ -451,11 +455,12 @@ def api_procesar():
             if "file" in r:
                 r["download_url"] = f"{host}/download/{r['file']}"
 
-        return jsonify({"status":"ok", "results": resultados}), 200
+        return jsonify({"status": "ok", "results": resultados}), 200
 
     except Exception as e:
         print("Error en /procesar:", str(e))
         return jsonify({"error": str(e)}), 500
+
 
 
 @app.route("/download/<filename>", methods=["GET"])
@@ -471,6 +476,7 @@ def download_file(filename):
 if __name__ == "__main__":
     # Render necesita que solo levantemos el servidor
     app.run(host="0.0.0.0", port=10000)
+
 
 
 
