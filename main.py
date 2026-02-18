@@ -433,19 +433,19 @@ def api_procesar():
         if data is None:
             return jsonify({"error": "No se recibió JSON"}), 400
 
-        # --- ADAPTADOR PARA n8n ---
-        # n8n manda: [ { "rutas": [...] } ]
-        if isinstance(data, list) and len(data) > 0 and "rutas" in data[0]:
+        print("JSON RECIBIDO:", type(data), data)  # 👈 agrega esto para debug
+
+        # ---- ADAPTADOR n8n ----
+        if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict) and "rutas" in data[0]:
             rutas = data[0]["rutas"]
         else:
-            # si viene directo (modo antiguo), usar tal cual
             rutas = data
+        # -----------------------
 
-        # --------------------------
+        print("RUTAS USADAS:", type(rutas))  # 👈 debug
 
         resultados = procesar_rutas(rutas)
 
-        # construir URLs de descarga
         host = request.host_url.rstrip('/')
         for r in resultados:
             if "file" in r:
@@ -456,6 +456,7 @@ def api_procesar():
     except Exception as e:
         print("Error en /procesar:", str(e))
         return jsonify({"error": str(e)}), 500
+
 
 @app.route("/download/<filename>", methods=["GET"])
 def download_file(filename):
@@ -470,6 +471,7 @@ def download_file(filename):
 if __name__ == "__main__":
     # Render necesita que solo levantemos el servidor
     app.run(host="0.0.0.0", port=10000)
+
 
 
 
