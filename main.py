@@ -17,7 +17,7 @@ from werkzeug.utils import secure_filename
 # ====================
 # CONFIG (entorno)
 # ====================
-PLANTILLA = os.environ.get("PLANTILLA", "Plantilla.xlsx")
+PLANTILLA = os.environ.get("PLANTILLA", "Plantilla.xlsm")
 OUTPUT_PREFIX = os.environ.get("OUTPUT_PREFIX", "Resultado")
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "/tmp")
 # tamaño máximo para un JSON subido (bytes)
@@ -211,3 +211,4 @@ def download_file(filename):
 if __name__ == "__main__":
     # En producción usar gunicorn: e.g. gunicorn -w 4 "calcular_rutas_full:app"
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
