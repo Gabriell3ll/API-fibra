@@ -165,12 +165,13 @@ def procesar_rutas(rutas):
         branch = ruta.get("branch","BR")
         inicio_name = ruta.get("inicio","START")
         puntos = ruta.get("puntos", [])
-        filename = secure_filename(f"{OUTPUT_PREFIX}_{branch}_{inicio_name}.xlsx")
+        ext = os.path.splitext(PLANTILLA)[1].lower()
+        filename = secure_filename(f"{OUTPUT_PREFIX}_{branch}_{inicio_name}{ext}")
         salida = os.path.join(OUTPUT_DIR, filename)
 
         # copiar plantilla para no modificarla
         shutil.copy(PLANTILLA, salida)
-        wb = load_workbook(salida)
+        wb = load_workbook(salida, keep_vba=True)
         if "Fiber design" not in wb.sheetnames:
             print(f"ERROR: la plantilla no contiene hoja 'Fiber design' - {salida}")
             wb.close()
@@ -576,3 +577,4 @@ def download_file(filename):
 if __name__ == "__main__":
     # En producción usar gunicorn: e.g. gunicorn -w 4 "calcular_rutas_full_complete:app"
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
